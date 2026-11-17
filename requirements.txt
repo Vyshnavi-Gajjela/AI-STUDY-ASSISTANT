@@ -1,0 +1,6 @@
+pymupdf
+python-pptx
+pytest
+sentence-transformers
+faiss-cpu
+streamlit>=1.32
