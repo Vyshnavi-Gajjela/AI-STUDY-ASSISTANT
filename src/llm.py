@@ -33,7 +33,10 @@ GEMINI_MODEL = _setting("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_RETRY_DELAYS = (1, 2, 4)
 
 
-def _generate_with_gemini(prompt: str) -> str:
+def _generate_with_gemini(
+    prompt: str,
+    response_schema: dict | None = None,
+) -> str:
     if not GEMINI_API_KEY:
         raise RuntimeError(
             "Gemini is selected but GEMINI_API_KEY is not configured. Add it "
@@ -45,6 +48,12 @@ def _generate_with_gemini(prompt: str) -> str:
         f"{GEMINI_MODEL}:generateContent"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    if response_schema is not None:
+        payload["generationConfig"] = {
+            "responseMimeType": "application/json",
+            "responseSchema": response_schema,
+            "maxOutputTokens": 8192,
+        }
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -113,10 +122,28 @@ def _generate_with_gemini(prompt: str) -> str:
     return answer
 
 
-def generate_answer(prompt: str) -> str:
+def _ollama_json_schema(response_schema: dict) -> dict:
+    """Convert Gemini's OpenAPI-style schema types to JSON Schema types."""
+    converted = {}
+    for key, value in response_schema.items():
+        if key == "type" and isinstance(value, str):
+            converted[key] = value.lower()
+        elif isinstance(value, dict):
+            converted[key] = _ollama_json_schema(value)
+        elif isinstance(value, list):
+            converted[key] = [
+                _ollama_json_schema(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            converted[key] = value
+    return converted
+
+
+def generate_answer(prompt: str, response_schema: dict | None = None) -> str:
     """Generate an answer using the configured model provider."""
     if LLM_PROVIDER == "gemini":
-        return _generate_with_gemini(prompt)
+        return _generate_with_gemini(prompt, response_schema=response_schema)
     if LLM_PROVIDER != "ollama":
         raise RuntimeError(
             f"Unsupported LLM_PROVIDER '{LLM_PROVIDER}'. Use 'ollama' or 'gemini'."
@@ -127,6 +154,8 @@ def generate_answer(prompt: str) -> str:
         "prompt": prompt,
         "stream": False,
     }
+    if response_schema is not None:
+        payload["format"] = _ollama_json_schema(response_schema)
 
     request = Request(
         OLLAMA_URL,

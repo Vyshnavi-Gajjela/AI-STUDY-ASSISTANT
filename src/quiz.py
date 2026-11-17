@@ -4,6 +4,44 @@ import re
 from src.llm import generate_answer
 
 
+QUIZ_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "questions": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "question": {"type": "STRING"},
+                    "options": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "A": {"type": "STRING"},
+                            "B": {"type": "STRING"},
+                            "C": {"type": "STRING"},
+                            "D": {"type": "STRING"},
+                        },
+                        "required": ["A", "B", "C", "D"],
+                    },
+                    "correct_answer": {
+                        "type": "STRING",
+                        "enum": ["A", "B", "C", "D"],
+                    },
+                    "explanation": {"type": "STRING"},
+                },
+                "required": [
+                    "question",
+                    "options",
+                    "correct_answer",
+                    "explanation",
+                ],
+            },
+        },
+    },
+    "required": ["questions"],
+}
+
+
 def build_quiz_prompt(chunks: list[dict], question_count: int) -> str:
     if not 5 <= question_count <= 15:
         raise ValueError("The quiz must contain between 5 and 15 questions.")
@@ -32,14 +70,38 @@ Document text:
 
 def _parse_quiz(response: str, expected_count: int) -> list[dict]:
     cleaned = response.strip()
-    fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.DOTALL)
-    if fence:
-        cleaned = fence.group(1)
-
     try:
         parsed = json.loads(cleaned)
-    except json.JSONDecodeError as error:
-        raise ValueError("The model returned invalid quiz JSON. Please try again.") from error
+    except json.JSONDecodeError:
+        fence = re.search(
+            r"```(?:json)?\s*(.*?)\s*```",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if fence:
+            cleaned = fence.group(1).strip()
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError:
+                parsed = None
+        else:
+            parsed = None
+
+        if parsed is None:
+            decoder = json.JSONDecoder()
+            parsed = None
+            for position, character in enumerate(cleaned):
+                if character != "{":
+                    continue
+                try:
+                    parsed, _ = decoder.raw_decode(cleaned[position:])
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if parsed is None:
+            raise ValueError(
+                "The AI returned quiz text in an unreadable format. Please retry."
+            )
 
     questions = parsed.get("questions") if isinstance(parsed, dict) else None
     if not isinstance(questions, list) or len(questions) != expected_count:
@@ -77,7 +139,30 @@ def _parse_quiz(response: str, expected_count: int) -> list[dict]:
     return validated
 
 
+def _generate_quiz_response(prompt: str) -> str:
+    return generate_answer(prompt, response_schema=QUIZ_RESPONSE_SCHEMA)
+
+
 def generate_quiz(chunks: list[dict], question_count: int = 5) -> list[dict]:
     prompt = build_quiz_prompt(chunks, question_count)
-    response = generate_answer(prompt)
-    return _parse_quiz(response, question_count)
+    response = _generate_quiz_response(prompt)
+
+    try:
+        return _parse_quiz(response, question_count)
+    except ValueError as first_error:
+        repair_prompt = f"""Convert the quiz response below into valid JSON matching this exact structure:
+{{"questions":[{{"question":"...","options":{{"A":"...","B":"...","C":"...","D":"..."}},"correct_answer":"A","explanation":"..."}}]}}
+
+Return exactly {question_count} questions, with four options and a correct_answer key of A, B, C, or D. Preserve the document-supported facts and do not add outside information.
+
+Quiz response to repair:
+{response}
+"""
+        repaired = _generate_quiz_response(repair_prompt)
+        try:
+            return _parse_quiz(repaired, question_count)
+        except ValueError as repair_error:
+            raise ValueError(
+                "The AI could not produce a valid quiz after retrying. Please "
+                "generate the quiz again."
+            ) from repair_error

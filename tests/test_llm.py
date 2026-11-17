@@ -140,3 +140,45 @@ def test_generate_answer_reports_repeated_gemini_503(monkeypatch):
 
     with pytest.raises(RuntimeError, match="temporarily unavailable"):
         llm.generate_answer("Question")
+
+
+def test_gemini_receives_json_response_schema(monkeypatch):
+    from src.quiz import QUIZ_RESPONSE_SCHEMA
+
+    captured = {}
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm, "GEMINI_API_KEY", "test-key")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({
+            "candidates": [{
+                "content": {"parts": [{"text": '{"questions":[]}'}]},
+            }],
+        })
+
+    monkeypatch.setattr(llm, "urlopen", fake_urlopen)
+
+    llm.generate_answer("Create questions", response_schema=QUIZ_RESPONSE_SCHEMA)
+
+    generation_config = captured["payload"]["generationConfig"]
+    assert generation_config["responseMimeType"] == "application/json"
+    assert generation_config["responseSchema"] == QUIZ_RESPONSE_SCHEMA
+    assert generation_config["maxOutputTokens"] == 8192
+
+
+def test_ollama_receives_lowercase_json_schema(monkeypatch):
+    from src.quiz import QUIZ_RESPONSE_SCHEMA
+
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"response": '{"questions":[]}'} )
+
+    monkeypatch.setattr(llm, "urlopen", fake_urlopen)
+
+    llm.generate_answer("Create questions", response_schema=QUIZ_RESPONSE_SCHEMA)
+
+    assert captured["payload"]["format"]["type"] == "object"
+    assert captured["payload"]["format"]["properties"]["questions"]["type"] == "array"

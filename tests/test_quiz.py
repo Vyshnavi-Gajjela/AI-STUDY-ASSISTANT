@@ -21,7 +21,11 @@ def _quiz_response(count=5):
 
 
 def test_generate_quiz_validates_and_returns_questions(monkeypatch):
-    monkeypatch.setattr(quiz, "generate_answer", lambda prompt: _quiz_response())
+    monkeypatch.setattr(
+        quiz,
+        "_generate_quiz_response",
+        lambda prompt: _quiz_response(),
+    )
 
     questions = quiz.generate_quiz(
         [{"text": "Plants use photosynthesis."}],
@@ -40,7 +44,40 @@ def test_build_quiz_prompt_rejects_out_of_range_question_count(count):
 
 
 def test_generate_quiz_rejects_invalid_model_response(monkeypatch):
-    monkeypatch.setattr(quiz, "generate_answer", lambda prompt: "not JSON")
+    responses = iter(["not JSON", "still not JSON"])
+    monkeypatch.setattr(
+        quiz,
+        "_generate_quiz_response",
+        lambda prompt: next(responses),
+    )
 
-    with pytest.raises(ValueError, match="invalid quiz JSON"):
+    with pytest.raises(ValueError, match="after retrying"):
         quiz.generate_quiz([{"text": "Document text"}], question_count=5)
+
+
+def test_parse_quiz_accepts_json_fence_and_surrounding_text():
+    response = f"Generated quiz:\n```JSON\n{_quiz_response()}\n```\nDone."
+
+    questions = quiz._parse_quiz(response, expected_count=5)
+
+    assert len(questions) == 5
+
+
+def test_generate_quiz_retries_invalid_json(monkeypatch):
+    responses = iter(["not JSON", _quiz_response()])
+    calls = []
+
+    def fake_generate(prompt):
+        calls.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(quiz, "_generate_quiz_response", fake_generate)
+
+    questions = quiz.generate_quiz(
+        [{"text": "Plants use photosynthesis."}],
+        question_count=5,
+    )
+
+    assert len(questions) == 5
+    assert len(calls) == 2
+    assert "response to repair" in calls[1]
