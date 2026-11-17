@@ -2,6 +2,9 @@
 
 A Streamlit app for studying a selected PDF or PowerPoint presentation. It extracts document text, splits it into overlapping chunks, creates embeddings, and combines literal/keyword retrieval with semantic search to find passages for answers.
 
+## Live Application
+https://ai-study-assistant369.streamlit.app/
+
 ## Features
 
 - Document-grounded questions with supporting source passages.
