@@ -2,7 +2,7 @@ from src.llm import generate_answer
 from src.prompts import build_summary_prompt
 
 
-SUMMARY_BATCH_CHARACTERS = 8000
+SUMMARY_BATCH_CHARACTERS = 24000
 
 
 def summarize_text(text: str) -> str:

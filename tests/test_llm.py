@@ -1,5 +1,5 @@
 import json
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -80,8 +80,9 @@ def test_generate_answer_uses_gemini_provider(monkeypatch):
     monkeypatch.setattr(llm, "urlopen", fake_urlopen)
 
     assert llm.generate_answer("Question") == "Gemini answer"
-    assert "test-key" in captured["url"]
+    assert captured["url"].endswith("gemini-3.5-flash-lite:generateContent")
     assert captured["timeout"] == 180
+    assert "test-key" not in captured["url"]
 
 
 def test_generate_answer_requires_gemini_api_key(monkeypatch):
@@ -96,4 +97,46 @@ def test_generate_answer_rejects_unknown_provider(monkeypatch):
     monkeypatch.setattr(llm, "LLM_PROVIDER", "unknown")
 
     with pytest.raises(RuntimeError, match="Unsupported LLM_PROVIDER"):
+        llm.generate_answer("Question")
+
+
+def test_generate_answer_retries_gemini_service_unavailable(monkeypatch):
+    attempts = []
+    delays = []
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "GEMINI_RETRY_DELAYS", (0,))
+    monkeypatch.setattr(llm.time, "sleep", delays.append)
+
+    def fake_urlopen(request, timeout):
+        attempts.append(request)
+        if len(attempts) == 1:
+            raise HTTPError(request.full_url, 503, "Unavailable", {}, None)
+        return FakeResponse({
+            "candidates": [{
+                "content": {"parts": [{"text": "Recovered answer"}]},
+            }],
+        })
+
+    monkeypatch.setattr(llm, "urlopen", fake_urlopen)
+
+    assert llm.generate_answer("Question") == "Recovered answer"
+    assert len(attempts) == 2
+    assert delays == [0]
+
+
+def test_generate_answer_reports_repeated_gemini_503(monkeypatch):
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "GEMINI_RETRY_DELAYS", ())
+    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(
+        llm,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(
+            HTTPError(request.full_url, 503, "Unavailable", {}, None)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
         llm.generate_answer("Question")

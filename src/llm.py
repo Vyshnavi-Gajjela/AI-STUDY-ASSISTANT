@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import time
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
@@ -29,6 +30,7 @@ MODEL_NAME = _setting("OLLAMA_MODEL", LLM_MODEL_NAME)
 LLM_PROVIDER = _setting("LLM_PROVIDER", "ollama").lower()
 GEMINI_API_KEY = _setting("GEMINI_API_KEY", "")
 GEMINI_MODEL = _setting("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_RETRY_DELAYS = (1, 2, 4)
 
 
 def _generate_with_gemini(prompt: str) -> str:
@@ -40,43 +42,57 @@ def _generate_with_gemini(prompt: str) -> str:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        f"{GEMINI_MODEL}:generateContent"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=180) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        if error.code == 429:
-            message = (
-                "Gemini rate limit or quota reached. Check the API project's "
-                "quota and billing, then retry."
-            )
-        elif error.code in {400, 403, 404}:
-            message = (
-                f"Gemini returned HTTP {error.code}. Check that the API key is "
-                f"valid and model '{GEMINI_MODEL}' is available."
-            )
-        else:
-            message = f"Gemini returned HTTP {error.code}."
-        raise RuntimeError(message) from error
-    except URLError as error:
-        raise RuntimeError(
-            "Could not connect to the Gemini API. Check the app host's internet "
-            "connection and try again."
-        ) from error
-    except (TimeoutError, socket.timeout) as error:
-        raise RuntimeError(
-            "Gemini took too long to respond. Please retry."
-        ) from error
-    except json.JSONDecodeError as error:
-        raise RuntimeError("Gemini returned an unreadable response.") from error
+    result = None
+    for attempt in range(len(GEMINI_RETRY_DELAYS) + 1):
+        try:
+            with urlopen(request, timeout=180) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            if error.code in {500, 502, 503, 504} and attempt < len(GEMINI_RETRY_DELAYS):
+                time.sleep(GEMINI_RETRY_DELAYS[attempt])
+                continue
+            if error.code == 429:
+                message = (
+                    "Gemini rate limit or quota reached. Check the API project's "
+                    "quota and billing, then retry."
+                )
+            elif error.code in {400, 403, 404}:
+                message = (
+                    f"Gemini returned HTTP {error.code}. Check that the API key is "
+                    f"valid and model '{GEMINI_MODEL}' is available."
+                )
+            elif error.code in {500, 502, 503, 504}:
+                message = (
+                    f"Gemini is temporarily unavailable (HTTP {error.code}) after "
+                    f"{attempt + 1} attempts. Please wait a moment and retry."
+                )
+            else:
+                message = f"Gemini returned HTTP {error.code}."
+            raise RuntimeError(message) from error
+        except URLError as error:
+            raise RuntimeError(
+                "Could not connect to the Gemini API. Check the app host's internet "
+                "connection and try again."
+            ) from error
+        except (TimeoutError, socket.timeout) as error:
+            raise RuntimeError(
+                "Gemini took too long to respond. Please retry."
+            ) from error
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Gemini returned an unreadable response.") from error
 
     candidates = result.get("candidates", [])
     parts = (
